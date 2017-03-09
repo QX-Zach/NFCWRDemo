@@ -1,12 +1,17 @@
 package personal.zach.nfcwrdemo;
 
+import android.annotation.TargetApi;
 import android.app.PendingIntent;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.content.pm.PackageManager;
+import android.nfc.NdefMessage;
+import android.nfc.NdefRecord;
 import android.nfc.NfcAdapter;
 import android.nfc.Tag;
 import android.nfc.tech.MifareClassic;
 import android.os.Bundle;
+import android.os.Parcelable;
 import android.support.v7.app.AppCompatActivity;
 import android.util.Log;
 import android.view.View;
@@ -37,6 +42,9 @@ public class MainActivity extends AppCompatActivity implements View.OnClickListe
     private int writeBlock = 1;
     private String[] strArray;
     String intentMsg = "";
+    NdefMessage[] msgs;
+    public static final byte[] write_pass =
+            {(byte)0x00,(byte)0x00,(byte)0x00,(byte)0x00,(byte)0x00,(byte)0x00};
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -57,6 +65,9 @@ public class MainActivity extends AppCompatActivity implements View.OnClickListe
 
         }
 
+        //检查设备时候有卡模拟组件
+        Log.e(TAG, "onCreate: 卡模拟组件："+getPackageManager().hasSystemFeature(PackageManager.FEATURE_NFC_HOST_CARD_EMULATION));
+
 //        intentMsg = getIntent().getStringExtra("msg");
 //        etWriteMsg.setText(intentMsg);
 
@@ -64,7 +75,7 @@ public class MainActivity extends AppCompatActivity implements View.OnClickListe
                 this, 0, new Intent(this, getClass()).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP), 0);
         techListsArray = new String[][]{new String[]{MifareClassic.class.getName()}};
         IntentFilter ndef = new IntentFilter();
-        ndef.addAction(NfcAdapter.ACTION_NDEF_DISCOVERED);
+        ndef.addAction(NfcAdapter.ACTION_TECH_DISCOVERED);
         intentFiltersArray = new IntentFilter[]{ndef};
         nfcAdapter = NfcAdapter.getDefaultAdapter(this);
         if (nfcAdapter == null) {
@@ -116,9 +127,41 @@ public class MainActivity extends AppCompatActivity implements View.OnClickListe
     }
 
 
+    @TargetApi(19)
     private void processIntent(Intent intent) {
+        tvResult.setText("");
+        try{
+            byte[] myNFCID = intent.getByteArrayExtra(NfcAdapter.EXTRA_ID);
+            Log.e(TAG, "processIntent: "+new String(myNFCID));
+            Log.e(TAG, "processIntent: "+ Convert.getHexString(myNFCID, myNFCID.length));
+
+        }catch (Exception ex){
+            Log.e(TAG, "UID_Ex: "+ex.getMessage());
+        }
+        Parcelable[] rawMsgs = intent.getParcelableArrayExtra(NfcAdapter.EXTRA_NDEF_MESSAGES);
+        if (rawMsgs != null) {
+            msgs = new NdefMessage[rawMsgs.length];
+            for (int i = 0; i < rawMsgs.length; i++) {
+                msgs[i] = (NdefMessage) rawMsgs[i];
+            }
+        }
+
+        Log.e(TAG, "processIntent: type:"+Convert.getHexString(msgs[0].getRecords()[0].getType(),msgs[0].getRecords()[0].getType().length));
+        Log.e(TAG, "processIntent: msgsSize:"+msgs.length+" ,msg0Size:"+msgs[0].getRecords().length);
+        Log.e(TAG, "processIntent: msgs:"+Convert.getHexString(msgs[0].getRecords()[0].getPayload(),msgs[0].getRecords()[0].getPayload().length));
+        Log.e(TAG, "processIntent: msgs:"+new String(msgs[0].getRecords()[0].getPayload()));
+        tvResult.append("id:"+new String(msgs[0].getRecords()[0].getType())+"\n");
+        tvResult.append("tnf:"+String.valueOf(msgs[0].getRecords()[0].getTnf())+"\n");
+        tvResult.append("msg:"+new String(msgs[0].getRecords()[0].getPayload())+"\n");
+        NdefMessage ndfmsg = new NdefMessage(NdefRecord.createApplicationRecord(getPackageName()));
+
         Tag tag = intent.getParcelableExtra(NfcAdapter.EXTRA_TAG);
+        tvResult.append("CardID:"+Convert.getHexString(tag.getId(),tag.getId().length));
+        for(String tech:tag.getTechList()){
+            Log.e(TAG, "processIntent: tech:"+tech);
+        }
         mfc = MifareClassic.get(tag);
+//        IsoDep isodep = IsoDep.get(tag);
         try {
 //            if (!mfc.isConnected())
             mfc.close();
@@ -126,14 +169,20 @@ public class MainActivity extends AppCompatActivity implements View.OnClickListe
             int sectorCount = mfc.getSectorCount();
             int blockCount = mfc.getBlockCount();
             int size = mfc.getSize();
-            tvResult.setText("\n扇区数量：" + sectorCount + "\nblock：" + blockCount + "\n存储空间：" + size);
+            tvResult.append("\n扇区数量：" + sectorCount + "\nblock：" + blockCount + "\n存储空间：" + size);
+            writeData(mfc, writeBlock, etWriteMsg.getText().toString());
+
+            try {
+                Thread.sleep(100);
+            } catch (InterruptedException e) {
+                e.printStackTrace();
+            }
             readData(mfc);
-            if (mfc.authenticateSectorWithKeyA(0, MifareClassic.KEY_DEFAULT)) {
-                tvResult.append("\n第0 block数据：" + new String(mfc.readBlock(0)));
+            if (mfc.authenticateSectorWithKeyA(0, write_pass)) {
+                tvResult.append("\n第0 block数据：" + Convert.getHexString(mfc.readBlock(0),mfc.readBlock(0).length));
                 tvResult.append("\n第1 block数据：" + new String(mfc.readBlock(1)));
                 tvResult.append("\n第2 block数据：" + new String(mfc.readBlock(2)));
             }
-            writeData(mfc, writeBlock, etWriteMsg.getText().toString());
 
 //            byte[] temp = "遇见".getBytes(Charset.forName("UTF-8"));
 //            Log.e(TAG, "processIntent_tempSize: " + temp.length);
@@ -185,18 +234,30 @@ public class MainActivity extends AppCompatActivity implements View.OnClickListe
         if (mfc != null) {
             if (mfc.isConnected()) {
                 try {
+
                     String result = "";
                     tvStatus.setText("正在读取数据");
                     for (int i = 0; i < mfc.getSectorCount(); i++) {//循环读取所有的扇区
                         int bindex;
                         int bCount;
-                        if (mfc.authenticateSectorWithKeyA(i, MifareClassic.KEY_DEFAULT)) {//读取的时候要校验key，否则无法读取
+                        if (mfc.authenticateSectorWithKeyA(i, MifareClassic.KEY_NFC_FORUM)) {//读取的时候要校验key，否则无法读取
                             bindex = mfc.sectorToBlock(i);
                             bCount = mfc.getBlockCountInSector(i);
                             result += "Sector " + i + "验证成功\n";
                             for (int j = 0; j < bCount; j++) {//循环读取指定扇区所有的块，每个扇区最后一个块是该块的key，除非要加密，否则不要轻易改变
                                 byte[] data = mfc.readBlock(bindex);
                                 result += "Block " + bindex + " : " + new String(data, Charset.forName("UTF-8")) + "\n";
+//                                result += "Block " + bindex + " : " + Convert.getHexString(data,data.length) + "\n";
+                                bindex++;
+                            }
+                        }else if(mfc.authenticateSectorWithKeyB(i,MifareClassic.KEY_DEFAULT)){
+                            bindex = mfc.sectorToBlock(i);
+                            bCount = mfc.getBlockCountInSector(i);
+                            result += "Sector " + i + "验证成功\n";
+                            for (int j = 0; j < bCount; j++) {//循环读取指定扇区所有的块，每个扇区最后一个块是该块的key，除非要加密，否则不要轻易改变
+                                byte[] data = mfc.readBlock(bindex);
+                                result += "Block " + bindex + " : " + new String(data, Charset.forName("UTF-8")) + "\n";
+//                                result += "Block " + bindex + " : " + Convert.getHexString(data,data.length) + "\n";
                                 bindex++;
                             }
                         }
@@ -232,7 +293,7 @@ public class MainActivity extends AppCompatActivity implements View.OnClickListe
                         public void run() {
                             try {
                                 Log.e(TAG, "run: 写入内容：" + new String(write));
-                                if (mfc.authenticateSectorWithKeyA(sectorIndex, MifareClassic.KEY_DEFAULT))
+                                if (mfc.authenticateSectorWithKeyA(sectorIndex, MifareClassic.KEY_NFC_FORUM))
                                     mfc.writeBlock(blockIndex, write);//写入方法是一个阻塞函数，不能在UI线程调用
                                 runOnUiThread(new Runnable() {
                                     @Override

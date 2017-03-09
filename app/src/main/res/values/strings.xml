@@ -1,3 +1,5 @@
 <resources>
     <string name="app_name">NFCWRDemo</string>
+    <string name="service_desc">NFC服务描述</string>
+    <string name="aid_description">NFC组描述</string>
 </resources>
